@@ -61,6 +61,36 @@ var (
 	keywordRegex         = regexp.MustCompile("(\\.|-|_|\\s){1,1}")
 )
 
+// getIntTypeBounds returns the min and max values for a given integer field type
+func getIntTypeBounds(fieldType string) (min int64, max int64) {
+	switch fieldType {
+	case FieldTypeByte:
+		return math.MinInt8, math.MaxInt8
+	case FieldTypeShort:
+		return math.MinInt16, math.MaxInt16
+	case FieldTypeInteger:
+		return math.MinInt32, math.MaxInt32
+	case FieldTypeLong:
+		return math.MinInt64, math.MaxInt64
+	case FieldTypeUnsignedLong:
+		return 0, math.MaxInt64 // Go int64 max; actual ES unsigned_long goes to 2^64-1
+	default:
+		// Default to long bounds
+		return math.MinInt64, math.MaxInt64
+	}
+}
+
+// clampInt64 clamps a value between min and max
+func clampInt64(value, min, max int64) int64 {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
+}
+
 // This is the emit function for the custom template engine where we stream content directly to the output buffer and no need a return value
 type emitFNotReturn func(state *genState, buf *bytes.Buffer) error
 
@@ -250,25 +280,64 @@ func makeFloatFunc(fieldCfg ConfigField, field Field) func() float64 {
 }
 
 func makeIntFunc(fieldCfg ConfigField, field Field) func() int64 {
+	// Get type-specific bounds
+	typeMin, typeMax := getIntTypeBounds(field.Type)
+
 	minValue, _ := fieldCfg.Range.MinAsInt64()
 	maxValue, err := fieldCfg.Range.MaxAsInt64()
-	// maxValue not set, let's set it to 0 for the sake of the switch above
-	if err != nil {
-		maxValue = 0
+
+	// Determine if a range was explicitly configured
+	hasConfiguredRange := err == nil && maxValue > 0
+
+	// Clamp configured range to type-specific bounds
+	if minValue < typeMin {
+		minValue = typeMin
+	}
+	if hasConfiguredRange {
+		if maxValue > typeMax {
+			maxValue = typeMax
+		}
+	} else {
+		// No configured range, use type bounds or simple defaults
+		maxValue = typeMax
 	}
 
 	var dummyFunc func() int64
 
 	switch {
-	case maxValue > 0:
-		dummyFunc = func() int64 { return customRand.Int63n(maxValue-minValue) + minValue }
+	case hasConfiguredRange && maxValue > minValue:
+		// User specified a range, respect it (clamped to type bounds)
+		rangeSize := maxValue - minValue + 1
+		if rangeSize > 0 {
+			dummyFunc = func() int64 { return customRand.Int63n(rangeSize) + minValue }
+		} else {
+			dummyFunc = func() int64 { return minValue }
+		}
 	case len(field.Example) == 0:
-		dummyFunc = func() int64 { return customRand.Int63n(10) }
+		// No range and no example, generate small values within type bounds
+		rangeBound := typeMax
+		if typeMin < 0 {
+			// For signed types, keep it simple and use 0-10
+			dummyFunc = func() int64 { return customRand.Int63n(10) }
+		} else if rangeBound > 10 {
+			// For unsigned types with large bounds, use 0-10
+			dummyFunc = func() int64 { return customRand.Int63n(10) }
+		} else {
+			// For small unsigned types (byte), use full range
+			dummyFunc = func() int64 { return customRand.Int63n(rangeBound + 1) }
+		}
 	default:
+		// Use example length to determine magnitude
 		totDigit := len(field.Example)
 		max := int64(math.Pow10(totDigit))
-		dummyFunc = func() int64 {
-			return customRand.Int63n(max)
+		// Clamp to type max
+		if max > typeMax {
+			max = typeMax
+		}
+		if max > 0 {
+			dummyFunc = func() int64 { return customRand.Int63n(max) }
+		} else {
+			dummyFunc = func() int64 { return 0 }
 		}
 	}
 
@@ -568,9 +637,14 @@ func fuzzyInt(previous int64, fuzziness, min, max float64) int64 {
 	return customRand.Int63n(int64(math.Ceil(higherBound-lowerBound))) + int64(lowerBound)
 }
 
-func fuzzyIntCounter(previous int64, fuzziness float64) int64 {
+func fuzzyIntCounter(previous int64, fuzziness, max float64) int64 {
 	lowerBound := float64(previous)
 	higherBound := float64(previous) * (1 + fuzziness)
+	// Clamp to max bound
+	higherBound = math.Min(higherBound, max)
+	if higherBound <= lowerBound {
+		return previous
+	}
 	return customRand.Int63n(int64(math.Ceil(higherBound-lowerBound))) + int64(lowerBound)
 }
 
@@ -580,6 +654,9 @@ func bindLong(fieldCfg ConfigField, field Field, fieldMap map[string]any) error 
 	}
 
 	if fieldCfg.Counter {
+		// Get type-specific bounds for counter
+		_, typeMax := getIntTypeBounds(field.Type)
+
 		var emitFNotReturn emitFNotReturn
 		emitFNotReturn = func(state *genState, buf *bytes.Buffer) error {
 			previous := int64(1)
@@ -595,7 +672,7 @@ func bindLong(fieldCfg ConfigField, field Field, fieldMap map[string]any) error 
 
 				dummyInt = dummyFunc()
 			} else {
-				dummyInt = fuzzyIntCounter(previous, fieldCfg.Fuzziness)
+				dummyInt = fuzzyIntCounter(previous, fieldCfg.Fuzziness, float64(typeMax))
 			}
 
 			state.prevCache[field.Name] = dummyInt
@@ -626,8 +703,24 @@ func bindLong(fieldCfg ConfigField, field Field, fieldMap map[string]any) error 
 		return nil
 	}
 
+	// Get type-specific bounds
+	typeMin, typeMax := getIntTypeBounds(field.Type)
+
 	min, _ := fieldCfg.Range.MinAsFloat64()
 	max, _ := fieldCfg.Range.MaxAsFloat64()
+
+	// If no range specified or range exceeds type bounds, use type bounds
+	if min == 0 && max == 0 {
+		min = float64(typeMin)
+		max = float64(typeMax)
+	} else {
+		if min < float64(typeMin) {
+			min = float64(typeMin)
+		}
+		if max > float64(typeMax) || max == 0 {
+			max = float64(typeMax)
+		}
+	}
 
 	var emitFNotReturn emitFNotReturn
 	emitFNotReturn = func(state *genState, buf *bytes.Buffer) error {
@@ -1001,6 +1094,9 @@ func bindLongWithReturn(fieldCfg ConfigField, field Field, fieldMap map[string]a
 	}
 
 	if fieldCfg.Counter {
+		// Get type-specific bounds for counter
+		_, typeMax := getIntTypeBounds(field.Type)
+
 		var emitF emitF
 
 		emitF = func(state *genState) any {
@@ -1017,7 +1113,7 @@ func bindLongWithReturn(fieldCfg ConfigField, field Field, fieldMap map[string]a
 
 				dummyInt = dummyFunc()
 			} else {
-				dummyInt = fuzzyIntCounter(previous, fieldCfg.Fuzziness)
+				dummyInt = fuzzyIntCounter(previous, fieldCfg.Fuzziness, float64(typeMax))
 			}
 
 			if fieldCfg.CounterReset != nil {
@@ -1061,8 +1157,24 @@ func bindLongWithReturn(fieldCfg ConfigField, field Field, fieldMap map[string]a
 		return nil
 	}
 
+	// Get type-specific bounds
+	typeMin, typeMax := getIntTypeBounds(field.Type)
+
 	min, _ := fieldCfg.Range.MinAsFloat64()
 	max, _ := fieldCfg.Range.MaxAsFloat64()
+
+	// If no range specified or range exceeds type bounds, use type bounds
+	if min == 0 && max == 0 {
+		min = float64(typeMin)
+		max = float64(typeMax)
+	} else {
+		if min < float64(typeMin) {
+			min = float64(typeMin)
+		}
+		if max > float64(typeMax) || max == 0 {
+			max = float64(typeMax)
+		}
+	}
 
 	var emitF emitF
 	emitF = func(state *genState) any {
@@ -1084,16 +1196,23 @@ func bindLongWithReturn(fieldCfg ConfigField, field Field, fieldMap map[string]a
 }
 
 func makeIntCounterFunc(previousDummyInt int64, field Field) func() int64 {
+	// Get type-specific bounds
+	_, typeMax := getIntTypeBounds(field.Type)
+
 	var dummyFunc func() int64
 
 	switch {
 	case len(field.Example) == 0:
-		dummyFunc = func() int64 { return previousDummyInt + customRand.Int63n(10) }
+		dummyFunc = func() int64 {
+			nextValue := previousDummyInt + customRand.Int63n(10)
+			return clampInt64(nextValue, previousDummyInt, typeMax)
+		}
 	default:
 		totDigit := len(field.Example)
 		max := int64(math.Pow10(totDigit))
 		dummyFunc = func() int64 {
-			return previousDummyInt + customRand.Int63n(max)
+			nextValue := previousDummyInt + customRand.Int63n(max)
+			return clampInt64(nextValue, previousDummyInt, typeMax)
 		}
 	}
 
