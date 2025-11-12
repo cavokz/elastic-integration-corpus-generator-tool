@@ -197,6 +197,7 @@ func Test_CardinalityWithCustomTemplate(t *testing.T) {
 
 	test_CardinalityTWithCustomTemplate[string](t, FieldTypeKeyword)
 	test_CardinalityTWithCustomTemplate[int32](t, FieldTypeInteger)
+	test_CardinalityTWithCustomTemplate[int64](t, FieldTypeLong)
 	test_CardinalityTWithCustomTemplate[float64](t, FieldTypeFloat)
 	test_CardinalityTWithCustomTemplate[string](t, FieldTypeGeoPoint)
 	test_CardinalityTWithCustomTemplate[string](t, FieldTypeIP)
@@ -207,7 +208,7 @@ func test_CardinalityTWithCustomTemplate[T any](t *testing.T, ty string) {
 	maxCardinality := 1000
 
 	template := []byte(`{"alpha":"{{.alpha}}", "beta":"{{.beta}}"}`)
-	if ty == FieldTypeInteger || ty == FieldTypeFloat {
+	if ty == FieldTypeInteger || ty == FieldTypeLong || ty == FieldTypeFloat {
 		template = []byte(`{"alpha":{{.alpha}}, "beta":{{.beta}}}`)
 	}
 
