@@ -59,6 +59,21 @@ var (
 	keywordRegex         = regexp.MustCompile("(\\.|-|_|\\s){1,1}")
 )
 
+// getIntTypeBounds returns the min and max values for a given integer field type
+func getIntTypeBounds(fieldType string) (min int64, max int64) {
+	switch fieldType {
+	case FieldTypeInteger:
+		return math.MinInt32, math.MaxInt32
+	case FieldTypeLong:
+		return math.MinInt64, math.MaxInt64
+	case FieldTypeUnsignedLong:
+		return 0, math.MaxInt64 // Go int64 max; actual ES unsigned_long goes to 2^64-1
+	default:
+		// Default to long bounds
+		return math.MinInt64, math.MaxInt64
+	}
+}
+
 // This is the emit function for the custom template engine where we stream content directly to the output buffer and no need a return value
 type emitFNotReturn func(state *genState, buf *bytes.Buffer) error
 
