@@ -3,13 +3,14 @@ package genlib
 import (
 	"bytes"
 	"fmt"
-	"github.com/elastic/elastic-integration-corpus-generator-tool/pkg/genlib/config"
 	"math/rand"
 	"net"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/elastic/elastic-integration-corpus-generator-tool/pkg/genlib/config"
 )
 
 func Test_ParseTemplate(t *testing.T) {
@@ -217,73 +218,78 @@ func test_CardinalityTWithCustomTemplate[T any](t *testing.T, ty string) {
 		Type: ty,
 	}
 
-	t.Logf("for type %s, with template: %s", ty, string(template))
-	for cardinality := 1000; cardinality >= 10; cardinality /= 10 {
+	t.Run(ty, func(t *testing.T) {
+		t.Parallel()
 
-		currentCardinality := 1000
-		currentCardinality /= cardinality
+		for cardinality := 1000; cardinality >= 10; cardinality /= 10 {
 
-		rangeTrailing := ""
-		if ty == FieldTypeFloat {
-			rangeTrailing = "."
+			currentCardinality := 1000
+			currentCardinality /= cardinality
+
+			t.Run(strconv.Itoa(currentCardinality), func(t *testing.T) {
+				rangeTrailing := ""
+				if ty == FieldTypeFloat {
+					rangeTrailing = "."
+				}
+
+				rangeMin := rand.Intn(100)
+				rangeMax := rand.Intn(10000-rangeMin) + rangeMin
+
+				// Add the range to get some variety in integers
+				tmpl := "fields:\n  - name: alpha\n    cardinality: %d\n    range:\n      min: %d%s\n      max: %d%s\n"
+				tmpl += "  - name: beta\n    cardinality: %d\n    range:\n      min: %d%s\n      max: %d%s"
+
+				yaml := []byte(fmt.Sprintf(tmpl, currentCardinality, rangeMin, rangeTrailing, rangeMax, rangeTrailing, currentCardinality*2, rangeMin, rangeTrailing, rangeMax, rangeTrailing))
+				cfg, err := config.LoadConfigFromYaml(yaml)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				nSpins := 16384
+				g := makeGeneratorWithCustomTemplate(t, cfg, []Field{fldAlpha, fldBeta}, template, uint64(len(template)*nSpins*1024))
+
+				vmapAlpha := make(map[any]int)
+				vmapBeta := make(map[any]int)
+
+				for i := 0; i < nSpins; i++ {
+
+					var buf bytes.Buffer
+					if err := g.Emit(&buf); err != nil {
+						t.Fatal(err)
+					}
+
+					m := unmarshalJSONT[T](t, buf.Bytes())
+
+					if len(m) != 2 {
+						t.Errorf("Expected map size 2, got %d", len(m))
+					}
+
+					v, ok := m[fldAlpha.Name]
+
+					if !ok {
+						t.Errorf("Missing key %v", fldAlpha.Name)
+					}
+
+					vmapAlpha[v] = vmapAlpha[v] + 1
+
+					v, ok = m[fldBeta.Name]
+
+					if !ok {
+						t.Errorf("Missing key %v", fldBeta.Name)
+					}
+
+					vmapBeta[v] = vmapBeta[v] + 1
+				}
+
+				if len(vmapAlpha) != 1000/cardinality {
+					t.Errorf("Expected cardinality of %d got %d", 1000/cardinality, len(vmapAlpha))
+				}
+				if len(vmapBeta) != 2000/cardinality {
+					t.Errorf("Expected cardinality of %d got %d", 2000/cardinality, len(vmapBeta))
+				}
+			})
 		}
-
-		rangeMin := rand.Intn(100)
-		rangeMax := rand.Intn(10000-rangeMin) + rangeMin
-
-		// Add the range to get some variety in integers
-		tmpl := "fields:\n  - name: alpha\n    cardinality: %d\n    range:\n      min: %d%s\n      max: %d%s\n"
-		tmpl += "  - name: beta\n    cardinality: %d\n    range:\n      min: %d%s\n      max: %d%s"
-
-		yaml := []byte(fmt.Sprintf(tmpl, currentCardinality, rangeMin, rangeTrailing, rangeMax, rangeTrailing, currentCardinality*2, rangeMin, rangeTrailing, rangeMax, rangeTrailing))
-		cfg, err := config.LoadConfigFromYaml(yaml)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		nSpins := 16384
-		g := makeGeneratorWithCustomTemplate(t, cfg, []Field{fldAlpha, fldBeta}, template, uint64(len(template)*nSpins*1024))
-
-		vmapAlpha := make(map[any]int)
-		vmapBeta := make(map[any]int)
-
-		for i := 0; i < nSpins; i++ {
-
-			var buf bytes.Buffer
-			if err := g.Emit(&buf); err != nil {
-				t.Fatal(err)
-			}
-
-			m := unmarshalJSONT[T](t, buf.Bytes())
-
-			if len(m) != 2 {
-				t.Errorf("Expected map size 2, got %d", len(m))
-			}
-
-			v, ok := m[fldAlpha.Name]
-
-			if !ok {
-				t.Errorf("Missing key %v", fldAlpha.Name)
-			}
-
-			vmapAlpha[v] = vmapAlpha[v] + 1
-
-			v, ok = m[fldBeta.Name]
-
-			if !ok {
-				t.Errorf("Missing key %v", fldBeta.Name)
-			}
-
-			vmapBeta[v] = vmapBeta[v] + 1
-		}
-
-		if len(vmapAlpha) != 1000/cardinality {
-			t.Errorf("Expected cardinality of %d got %d", 1000/cardinality, len(vmapAlpha))
-		}
-		if len(vmapBeta) != 2000/cardinality {
-			t.Errorf("Expected cardinality of %d got %d", 2000/cardinality, len(vmapBeta))
-		}
-	}
+	})
 }
 
 func Test_FieldBoolWithCustomTemplate(t *testing.T) {
@@ -934,13 +940,13 @@ func _testNumericWithCustomTemplate[T any](t *testing.T, ty string) {
 		Name: "alpha",
 		Type: ty,
 	}
-
-	template := []byte(`{"alpha":{{.alpha}}}`)
-	t.Logf("with template: %s", string(template))
-	nSpins := rand.Intn(1024) + 1
-	for i := 0; i < nSpins; i++ {
-		testSingleTWithCustomTemplate[T](t, fld, nil, template)
-	}
+	t.Run(ty, func(t *testing.T) {
+		template := []byte(`{"alpha":{{.alpha}}}`)
+		nSpins := rand.Intn(1024) + 1
+		for i := 0; i < nSpins; i++ {
+			testSingleTWithCustomTemplate[T](t, fld, nil, template)
+		}
+	})
 }
 
 func testSingleTWithCustomTemplate[T any](t *testing.T, fld Field, yaml []byte, template []byte) T {
