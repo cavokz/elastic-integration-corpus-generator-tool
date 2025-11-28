@@ -61,6 +61,25 @@ var (
 	keywordRegex         = regexp.MustCompile("(\\.|-|_|\\s){1,1}")
 )
 
+// getIntTypeBounds returns the min and max values for a given integer field type
+func getIntTypeBounds(fieldType string) (min int64, max int64) {
+	switch fieldType {
+	case FieldTypeByte:
+		return math.MinInt8, math.MaxInt8
+	case FieldTypeShort:
+		return math.MinInt16, math.MaxInt16
+	case FieldTypeInteger:
+		return math.MinInt32, math.MaxInt32
+	case FieldTypeLong:
+		return math.MinInt64, math.MaxInt64
+	case FieldTypeUnsignedLong:
+		return 0, math.MaxInt64 // Go int64 max; actual ES unsigned_long goes to 2^64-1
+	default:
+		// Default to long bounds
+		return math.MinInt64, math.MaxInt64
+	}
+}
+
 // This is the emit function for the custom template engine where we stream content directly to the output buffer and no need a return value
 type emitFNotReturn func(state *genState, buf *bytes.Buffer) error
 
@@ -249,30 +268,64 @@ func makeFloatFunc(fieldCfg ConfigField, field Field) func() float64 {
 	return dummyFunc
 }
 
-func makeIntFunc(fieldCfg ConfigField, field Field) func() int64 {
-	minValue, _ := fieldCfg.Range.MinAsInt64()
-	maxValue, err := fieldCfg.Range.MaxAsInt64()
-	// maxValue not set, let's set it to 0 for the sake of the switch above
+func makeIntFunc(fieldCfg ConfigField, field Field) (func() int64, error) {
+	typeMin, typeMax := getIntTypeBounds(field.Type)
+
+	minValue, err := fieldCfg.Range.MinAsInt64()
 	if err != nil {
-		maxValue = 0
+		minValue = typeMin
+	}
+	if minValue < typeMin {
+		return nil, fmt.Errorf("configured min value %d for field %s is less than type min %d", minValue, field.Name, typeMin)
+	}
+
+	maxValue, err := fieldCfg.Range.MaxAsInt64()
+	if err != nil {
+		maxValue = typeMax
+	}
+	if maxValue > typeMax {
+		return nil, fmt.Errorf("configured max value %d for field %s is greater than type max %d", maxValue, field.Name, typeMax)
+	}
+
+	valueRange := maxValue - minValue
+	if valueRange <= 0 {
+		valueRange = math.MaxInt64
 	}
 
 	var dummyFunc func() int64
 
 	switch {
-	case maxValue > 0:
-		dummyFunc = func() int64 { return customRand.Int63n(maxValue-minValue) + minValue }
+	case valueRange > 0:
+		dummyFunc = func() int64 { return customRand.Int63n(valueRange) + minValue }
 	case len(field.Example) == 0:
-		dummyFunc = func() int64 { return customRand.Int63n(10) }
+		// No range and no example, generate small values within type bounds
+		rangeBound := typeMax
+		if typeMin < 0 {
+			// For signed types, keep it simple and use 0-10
+			dummyFunc = func() int64 { return customRand.Int63n(10) }
+		} else if rangeBound > 10 {
+			// For unsigned types with large bounds, use 0-10
+			dummyFunc = func() int64 { return customRand.Int63n(10) }
+		} else {
+			// For small unsigned types (byte), use full range
+			dummyFunc = func() int64 { return customRand.Int63n(rangeBound + 1) }
+		}
 	default:
+		// Use example length to determine magnitude
 		totDigit := len(field.Example)
 		max := int64(math.Pow10(totDigit))
-		dummyFunc = func() int64 {
-			return customRand.Int63n(max)
+		// Clamp to type max
+		if max > maxValue {
+			max = maxValue
+		}
+		if max > 0 {
+			dummyFunc = func() int64 { return customRand.Int63n(max) }
+		} else {
+			dummyFunc = func() int64 { return 0 }
 		}
 	}
 
-	return dummyFunc
+	return dummyFunc, nil
 }
 
 func bindObject(cfg Config, fieldCfg ConfigField, field Field, fieldMap map[string]any) error {
@@ -610,7 +663,10 @@ func bindLong(fieldCfg ConfigField, field Field, fieldMap map[string]any) error 
 		return nil
 	}
 
-	dummyFunc := makeIntFunc(fieldCfg, field)
+	dummyFunc, err := makeIntFunc(fieldCfg, field)
+	if err != nil {
+		return err
+	}
 
 	if fieldCfg.Fuzziness <= 0 {
 		var emitFNotReturn emitFNotReturn
@@ -1049,7 +1105,10 @@ func bindLongWithReturn(fieldCfg ConfigField, field Field, fieldMap map[string]a
 		return nil
 	}
 
-	dummyFunc := makeIntFunc(fieldCfg, field)
+	dummyFunc, err := makeIntFunc(fieldCfg, field)
+	if err != nil {
+		return err
+	}
 
 	if fieldCfg.Fuzziness <= 0 {
 		var emitF emitF

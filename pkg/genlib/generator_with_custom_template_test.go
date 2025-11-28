@@ -207,9 +207,13 @@ func Test_CardinalityWithCustomTemplate(t *testing.T) {
 }
 
 func test_CardinalityTWithCustomTemplate[T any](t *testing.T, ty string) {
+	maxCardinality := 1000
+
 	template := []byte(`{"alpha":"{{.alpha}}", "beta":"{{.beta}}"}`)
 	if ty == FieldTypeByte || ty == FieldTypeShort || ty == FieldTypeInteger || ty == FieldTypeLong || ty == FieldTypeFloat {
 		template = []byte(`{"alpha":{{.alpha}}, "beta":{{.beta}}}`)
+		typeMin, typeMax := getIntTypeBounds(ty)
+		maxCardinality = int(typeMax - typeMin + 1)
 	}
 
 	fldAlpha := Field{
@@ -226,6 +230,10 @@ func test_CardinalityTWithCustomTemplate[T any](t *testing.T, ty string) {
 
 			currentCardinality := 1000
 			currentCardinality /= cardinality
+
+			if currentCardinality > maxCardinality {
+				continue
+			}
 
 			t.Run(strconv.Itoa(currentCardinality), func(t *testing.T) {
 				rangeTrailing := ""
