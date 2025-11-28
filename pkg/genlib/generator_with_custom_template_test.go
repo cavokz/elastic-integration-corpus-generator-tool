@@ -207,9 +207,25 @@ func Test_CardinalityWithCustomTemplate(t *testing.T) {
 func test_CardinalityTWithCustomTemplate[T any](t *testing.T, ty string) {
 	maxCardinality := 1000
 
+	getTypeRange := func() (int64, int64) {
+		rangeMin := rand.Int63n(100)
+		rangeMax := rand.Int63n(10000-rangeMin) + rangeMin
+		return rangeMin, rangeMax
+	}
+
 	template := []byte(`{"alpha":"{{.alpha}}", "beta":"{{.beta}}"}`)
 	if ty == FieldTypeInteger || ty == FieldTypeLong || ty == FieldTypeFloat {
 		template = []byte(`{"alpha":{{.alpha}}, "beta":{{.beta}}}`)
+	}
+
+	getRange := func(cardinality int) (int64, int64) {
+		for i := 0; i < 11; i++ {
+			rangeMin, rangeMax := getTypeRange()
+			if rangeMax-rangeMin >= int64(4*cardinality) {
+				return rangeMin, rangeMax
+			}
+		}
+		return 0, 0
 	}
 
 	fldAlpha := Field{
@@ -226,13 +242,16 @@ func test_CardinalityTWithCustomTemplate[T any](t *testing.T, ty string) {
 
 		for cardinality := 1; cardinality < maxCardinality; cardinality *= 10 {
 			t.Run(strconv.Itoa(cardinality), func(t *testing.T) {
+				rangeMin, rangeMax := getRange(cardinality)
+				if rangeMin == 0 && rangeMax == 0 {
+					t.Errorf("Insufficient type range for cardinality %d", cardinality)
+					return
+				}
+
 				rangeTrailing := ""
 				if ty == FieldTypeFloat {
 					rangeTrailing = "."
 				}
-
-				rangeMin := rand.Intn(100)
-				rangeMax := rand.Intn(10000-rangeMin) + rangeMin
 
 				// Add the range to get some variety in integers
 				tmpl := "fields:\n  - name: alpha\n    cardinality: %d\n    range:\n      min: %d%s\n      max: %d%s\n"
