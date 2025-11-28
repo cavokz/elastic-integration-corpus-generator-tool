@@ -54,76 +54,79 @@ func test_CardinalityTWithTextTemplate[T any](t *testing.T, ty string) {
 		Type: ty,
 	}
 
-	t.Logf("for type %s, with template: %s", ty, string(template))
-	// It's cardinality per mille, so a bit confusing :shrug:
-	for cardinality := 1000; cardinality >= 10; cardinality /= 10 {
+	t.Run(ty, func(t *testing.T) {
+		// It's cardinality per mille, so a bit confusing :shrug:
+		for cardinality := 1000; cardinality >= 10; cardinality /= 10 {
 
-		currentCardinality := 1000
-		currentCardinality /= cardinality
+			currentCardinality := 1000
+			currentCardinality /= cardinality
 
-		rangeTrailing := ""
-		if ty == FieldTypeFloat {
-			rangeTrailing = "."
+			t.Run(strconv.Itoa(currentCardinality), func(t *testing.T) {
+				rangeTrailing := ""
+				if ty == FieldTypeFloat {
+					rangeTrailing = "."
+				}
+
+				rangeMin := rand.Intn(100)
+				rangeMax := rand.Intn(10000-rangeMin) + rangeMin
+
+				// Add the range to get some variety in integers
+				tmpl := "fields:\n  - name: alpha\n    cardinality: %d\n    range:\n      min: %d%s\n      max: %d%s\n"
+				tmpl += "  - name: beta\n    cardinality: %d\n    range:\n      min: %d%s\n      max: %d%s"
+
+				yaml := []byte(fmt.Sprintf(tmpl, currentCardinality, rangeMin, rangeTrailing, rangeMax, rangeTrailing, currentCardinality*2, rangeMin, rangeTrailing, rangeMax, rangeTrailing))
+
+				cfg, err := config.LoadConfigFromYaml(yaml)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				nSpins := 16384
+				g := makeGeneratorWithTextTemplate(t, cfg, []Field{fldAlpha, fldBeta}, template, uint64(nSpins))
+
+				vmapAlpha := make(map[any]int)
+				vmapBeta := make(map[any]int)
+
+				for i := 0; i < nSpins; i++ {
+
+					var buf bytes.Buffer
+					if err := g.Emit(&buf); err != nil {
+						t.Fatal(err)
+					}
+
+					m := unmarshalJSONT[T](t, buf.Bytes())
+
+					if len(m) != 2 {
+						t.Errorf("Expected map size 1, got %d", len(m))
+					}
+
+					v, ok := m[fldAlpha.Name]
+
+					if !ok {
+						t.Errorf("Missing key %v", fldAlpha.Name)
+					}
+
+					vmapAlpha[v] = vmapAlpha[v] + 1
+
+					v, ok = m[fldBeta.Name]
+
+					if !ok {
+						t.Errorf("Missing key %v", fldBeta.Name)
+					}
+
+					vmapBeta[v] = vmapBeta[v] + 1
+				}
+
+				if len(vmapAlpha) != 1000/cardinality {
+					t.Errorf("Expected cardinality of %d got %d", 1000/cardinality, len(vmapAlpha))
+				}
+
+				if len(vmapBeta) != 2000/cardinality {
+					t.Errorf("Expected cardinality of %d got %d", 2000/cardinality, len(vmapBeta))
+				}
+			})
 		}
-
-		rangeMin := rand.Intn(100)
-		rangeMax := rand.Intn(10000-rangeMin) + rangeMin
-
-		// Add the range to get some variety in integers
-		tmpl := "fields:\n  - name: alpha\n    cardinality: %d\n    range:\n      min: %d%s\n      max: %d%s\n"
-		tmpl += "  - name: beta\n    cardinality: %d\n    range:\n      min: %d%s\n      max: %d%s"
-
-		yaml := []byte(fmt.Sprintf(tmpl, currentCardinality, rangeMin, rangeTrailing, rangeMax, rangeTrailing, currentCardinality*2, rangeMin, rangeTrailing, rangeMax, rangeTrailing))
-
-		cfg, err := config.LoadConfigFromYaml(yaml)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		nSpins := 16384
-		g := makeGeneratorWithTextTemplate(t, cfg, []Field{fldAlpha, fldBeta}, template, uint64(nSpins))
-
-		vmapAlpha := make(map[any]int)
-		vmapBeta := make(map[any]int)
-
-		for i := 0; i < nSpins; i++ {
-
-			var buf bytes.Buffer
-			if err := g.Emit(&buf); err != nil {
-				t.Fatal(err)
-			}
-
-			m := unmarshalJSONT[T](t, buf.Bytes())
-
-			if len(m) != 2 {
-				t.Errorf("Expected map size 1, got %d", len(m))
-			}
-
-			v, ok := m[fldAlpha.Name]
-
-			if !ok {
-				t.Errorf("Missing key %v", fldAlpha.Name)
-			}
-
-			vmapAlpha[v] = vmapAlpha[v] + 1
-
-			v, ok = m[fldBeta.Name]
-
-			if !ok {
-				t.Errorf("Missing key %v", fldBeta.Name)
-			}
-
-			vmapBeta[v] = vmapBeta[v] + 1
-		}
-
-		if len(vmapAlpha) != 1000/cardinality {
-			t.Errorf("Expected cardinality of %d got %d", 1000/cardinality, len(vmapAlpha))
-		}
-
-		if len(vmapBeta) != 2000/cardinality {
-			t.Errorf("Expected cardinality of %d got %d", 2000/cardinality, len(vmapBeta))
-		}
-	}
+	})
 }
 
 func Test_FieldBoolWithTextTemplate(t *testing.T) {
@@ -838,12 +841,13 @@ func _testNumericWithTextTemplate[T any](t *testing.T, ty string) {
 		Type: ty,
 	}
 
-	template := []byte(`{"alpha":{{generate "alpha"}}}`)
-	t.Logf("with template: %s", string(template))
-	nSpins := rand.Intn(1024) + 1
-	for i := 0; i < nSpins; i++ {
-		testSingleTWithTextTemplate[T](t, fld, nil, template)
-	}
+	t.Run(ty, func(t *testing.T) {
+		template := []byte(`{"alpha":{{generate "alpha"}}}`)
+		nSpins := rand.Intn(1024) + 1
+		for i := 0; i < nSpins; i++ {
+			testSingleTWithTextTemplate[T](t, fld, nil, template)
+		}
+	})
 }
 
 func testSingleTWithTextTemplate[T any](t *testing.T, fld Field, yaml []byte, template []byte) T {
