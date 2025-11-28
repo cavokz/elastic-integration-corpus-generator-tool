@@ -207,9 +207,25 @@ func Test_CardinalityWithCustomTemplate(t *testing.T) {
 }
 
 func test_CardinalityTWithCustomTemplate[T any](t *testing.T, ty string) {
+	maxCardinality := 1000
+
+	getRange := func() (int64, int64) {
+		rangeMin := rand.Int63n(100)
+		rangeMax := rand.Int63n(10000-rangeMin) + rangeMin
+		return rangeMin, rangeMax
+	}
+
 	template := []byte(`{"alpha":"{{.alpha}}", "beta":"{{.beta}}"}`)
 	if ty == FieldTypeByte || ty == FieldTypeShort || ty == FieldTypeInteger || ty == FieldTypeLong || ty == FieldTypeFloat {
 		template = []byte(`{"alpha":{{.alpha}}, "beta":{{.beta}}}`)
+		typeMin, typeMax := getIntTypeBounds(ty)
+		halfRange := typeMax/2 - typeMin/2
+
+		getRange = func() (int64, int64) {
+			rangeMin := typeMin + rand.Int63n(halfRange/2)
+			rangeMax := typeMax - rand.Int63n(halfRange/2)
+			return rangeMin, rangeMax
+		}
 	}
 
 	fldAlpha := Field{
@@ -222,25 +238,26 @@ func test_CardinalityTWithCustomTemplate[T any](t *testing.T, ty string) {
 	}
 
 	t.Run(ty, func(t *testing.T) {
-		for cardinality := 1000; cardinality >= 10; cardinality /= 10 {
+		for cardinality := 1; cardinality <= maxCardinality; cardinality *= 10 {
+			t.Run(strconv.Itoa(cardinality), func(t *testing.T) {
+				rangeMin, rangeMax := getRange()
+				if rangeMax-rangeMin < int64(2*cardinality) {
+					t.Logf("Skipping cardinality %d for type %s due to insufficient range %d-%d", cardinality, ty, rangeMin, rangeMax)
+					return
+				}
 
-			currentCardinality := 1000
-			currentCardinality /= cardinality
+				t.Logf("min: %v, max: %v\n", rangeMin, rangeMax)
 
-			t.Run(strconv.Itoa(currentCardinality), func(t *testing.T) {
 				rangeTrailing := ""
 				if ty == FieldTypeFloat {
 					rangeTrailing = "."
 				}
 
-				rangeMin := rand.Intn(100)
-				rangeMax := rand.Intn(10000-rangeMin) + rangeMin
-
 				// Add the range to get some variety in integers
 				tmpl := "fields:\n  - name: alpha\n    cardinality: %d\n    range:\n      min: %d%s\n      max: %d%s\n"
 				tmpl += "  - name: beta\n    cardinality: %d\n    range:\n      min: %d%s\n      max: %d%s"
 
-				yaml := []byte(fmt.Sprintf(tmpl, currentCardinality, rangeMin, rangeTrailing, rangeMax, rangeTrailing, currentCardinality*2, rangeMin, rangeTrailing, rangeMax, rangeTrailing))
+				yaml := []byte(fmt.Sprintf(tmpl, cardinality, rangeMin, rangeTrailing, rangeMax, rangeTrailing, 2*cardinality, rangeMin, rangeTrailing, rangeMax, rangeTrailing))
 				cfg, err := config.LoadConfigFromYaml(yaml)
 				if err != nil {
 					t.Fatal(err)
@@ -282,11 +299,11 @@ func test_CardinalityTWithCustomTemplate[T any](t *testing.T, ty string) {
 					vmapBeta[v] = vmapBeta[v] + 1
 				}
 
-				if len(vmapAlpha) != 1000/cardinality {
-					t.Errorf("Expected cardinality of %d got %d", 1000/cardinality, len(vmapAlpha))
+				if len(vmapAlpha) != cardinality {
+					t.Errorf("Expected cardinality of %d got %d", cardinality, len(vmapAlpha))
 				}
-				if len(vmapBeta) != 2000/cardinality {
-					t.Errorf("Expected cardinality of %d got %d", 2000/cardinality, len(vmapBeta))
+				if len(vmapBeta) != 2*cardinality {
+					t.Errorf("Expected cardinality of %d got %d", 2*cardinality, len(vmapBeta))
 				}
 			})
 		}
