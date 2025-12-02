@@ -218,6 +218,14 @@ func test_CardinalityTWithCustomTemplate[T any](t *testing.T, ty string) {
 	template := []byte(`{"alpha":"{{.alpha}}", "beta":"{{.beta}}"}`)
 	if ty == FieldTypeByte || ty == FieldTypeShort || ty == FieldTypeInteger || ty == FieldTypeLong || ty == FieldTypeFloat {
 		template = []byte(`{"alpha":{{.alpha}}, "beta":{{.beta}}}`)
+		typeMin, typeMax := getIntTypeBounds(ty)
+		halfRange := typeMax/2 - typeMin/2
+
+		_ = func() (int64, int64) {
+			rangeMin := typeMin + rand.Int63n(halfRange/2)
+			rangeMax := typeMax - rand.Int63n(halfRange/2)
+			return rangeMin, rangeMax
+		}
 	}
 
 	getRange := func(cardinality int) (int64, int64) {
