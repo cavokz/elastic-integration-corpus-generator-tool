@@ -4,10 +4,7 @@
 
 package genlib
 
-import (
-	"math/rand"
-	"time"
-)
+import "time"
 
 // options holds the configuration options for generators.
 type options struct {
@@ -52,9 +49,11 @@ func WithCustomTemplate(template []byte) Option {
 
 // applyOptions applies the given options and returns the final configuration.
 func applyOptions(opts []Option) options {
+	// This initialization is executed in a concurrent context, any accesss
+	// to non thread-safe resources must be properly synchronized.
 	o := options{
 		make:      newGeneratorWithCustomTemplate,
-		randSeed:  rand.Int63(),
+		randSeed:  time.Now().UnixNano(),
 		startTime: time.Now(),
 	}
 	for _, opt := range opts {

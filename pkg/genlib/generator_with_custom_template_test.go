@@ -179,8 +179,8 @@ func Test_ParseTemplate(t *testing.T) {
 
 func Test_EmptyCaseWithCustomTemplate(t *testing.T) {
 	startTime := time.Now().Truncate(time.Microsecond)
-	r := rand.New(rand.NewSource(rand.Int63()))
-	template, _ := generateCustomTemplateFromField(Config{}, []Field{}, r)
+	state := newGenState(rand.Int63(), startTime)
+	template, _ := generateCustomTemplateFromField(Config{}, []Field{}, state)
 	t.Logf("with template: %s", string(template))
 	g := makeGeneratorWithCustomTemplate(t, Config{}, []Field{}, template, 0, WithStartTime(startTime))
 

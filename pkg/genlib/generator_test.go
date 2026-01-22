@@ -3,31 +3,20 @@ package genlib
 import (
 	"bytes"
 	"context"
-	"log"
 	"math/rand"
-	"os"
 	"testing"
+	"time"
 
 	"github.com/elastic/elastic-integration-corpus-generator-tool/pkg/genlib/config"
 	"github.com/elastic/elastic-integration-corpus-generator-tool/pkg/genlib/fields"
 )
 
-func TestMain(m *testing.M) {
-	randSeed := rand.Int63()
-
-	log.Printf("rand seed generator initialised with value `%d`\n", randSeed)
-
-	InitGeneratorRandSeed(randSeed)
-
-	os.Exit(m.Run())
-}
-
 func Benchmark_GeneratorCustomTemplateJSONContent(b *testing.B) {
 	ctx := context.Background()
 	flds, _, err := fields.LoadFields(ctx, fields.ProductionBaseURL, "endpoint", "process", "8.2.0")
 
-	r := rand.New(rand.NewSource(rand.Int63()))
-	template, objectKeysField := generateCustomTemplateFromField(Config{}, flds, r)
+	state := newGenState(rand.Int63(), time.Now())
+	template, objectKeysField := generateCustomTemplateFromField(Config{}, flds, state)
 	flds = append(flds, objectKeysField...)
 	g, err := NewGenerator(Config{}, flds, uint64(b.N), WithCustomTemplate(template))
 	defer func() {
@@ -54,8 +43,8 @@ func Benchmark_GeneratorTextTemplateJSONContent(b *testing.B) {
 	ctx := context.Background()
 	flds, _, err := fields.LoadFields(ctx, fields.ProductionBaseURL, "endpoint", "process", "8.2.0")
 
-	r := rand.New(rand.NewSource(rand.Int63()))
-	template, objectKeysField := generateTextTemplateFromField(Config{}, flds, r)
+	state := newGenState(rand.Int63(), time.Now())
+	template, objectKeysField := generateTextTemplateFromField(Config{}, flds, state)
 	flds = append(flds, objectKeysField...)
 
 	g, err := NewGenerator(Config{}, flds, uint64(b.N), WithTextTemplate(template))

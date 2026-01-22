@@ -15,8 +15,8 @@ import (
 
 func Test_EmptyCaseWithTextTemplate(t *testing.T) {
 	startTime := time.Now().Truncate(time.Microsecond)
-	r := rand.New(rand.NewSource(rand.Int63()))
-	template, _ := generateTextTemplateFromField(Config{}, []Field{}, r)
+	state := newGenState(rand.Int63(), startTime)
+	template, _ := generateTextTemplateFromField(Config{}, []Field{}, state)
 	t.Logf("with template: %s", string(template))
 	g := makeGeneratorWithTextTemplate(t, Config{}, []Field{}, template, 0, WithStartTime(startTime))
 
