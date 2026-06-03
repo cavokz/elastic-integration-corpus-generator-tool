@@ -17,12 +17,19 @@ type emitter struct {
 	prefix    []byte
 }
 
-// GeneratorWithCustomTemplate is resolved at construction to a slice of emit functions
-type GeneratorWithCustomTemplate struct {
-	totEvents        uint64
+// customTemplate holds the compiled, immutable, shareable part of a custom
+// template generator. Safe for concurrent use by multiple Generator instances.
+type customTemplate struct {
 	emitters         []emitter
 	trailingTemplate []byte
-	state            *genState
+	totEvents        uint64
+	fieldNames       []string
+}
+
+// GeneratorWithCustomTemplate pairs a shared customTemplate with per-instance mutable state.
+type GeneratorWithCustomTemplate struct {
+	tpl   *customTemplate
+	state *genState
 }
 
 func parseCustomTemplate(template []byte) ([]string, map[string][]byte, []byte) {
@@ -82,42 +89,53 @@ func parseCustomTemplate(template []byte) ([]string, map[string][]byte, []byte) 
 
 }
 
-func newGeneratorWithCustomTemplate(cfg Config, fields Fields, totEvents uint64, opts options) (Generator, error) {
-	state := newGenState(opts.randSeed, opts.startTime, opts.timeSpeed)
+// NewCustomTemplate compiles a custom template from cfg and fields. The result
+// is returned as an Option that can be passed to NewGenerator to cheaply create
+// multiple Generator instances sharing the compiled template.
+//
+// If templateBytes is nil, the template is auto-generated from fields (random
+// noun keys for object/flattened/nested fields). opts may include WithRandSeed
+// (for deterministic noun generation), WithStartTime, and WithTimeSpeed.
+//
+// Intended usage:
+//
+//	// Compile once per stream (expensive)
+//	opt, err := genlib.NewCustomTemplate(cfg, flds, totEvents, nil)
+//
+//	// Per drone (cheap — only allocates genState)
+//	g, err := genlib.NewGenerator(nil, nil, 0, opt, genlib.WithRandSeed(seed))
+func NewCustomTemplate(cfg Config, flds Fields, totEvents uint64, templateBytes []byte, opts ...Option) (Option, error) {
+	o := applyOptions(opts)
 
-	// If no template provided, generate one from fields
-	if opts.template == nil {
-		template, objectKeysField := generateCustomTemplateFromField(cfg, fields, state)
+	if templateBytes == nil {
+		tmpState := newGenState(o.randSeed, o.startTime, o.timeSpeed)
+		var objectKeysFields Fields
+		templateBytes, objectKeysFields = generateCustomTemplateFromField(cfg, flds, tmpState)
 		// Use a three-index slice to cap capacity at len, forcing append to
 		// allocate a fresh backing array. This prevents a data race when the
 		// caller's fields slice shares a backing array across goroutines (a
 		// common pattern when normaliseFields returns cap > len after filtering
 		// wildcard fields). Without this, concurrent NewGenerator calls can
-		// write objectKeysField entries into the same backing-array slots,
+		// write objectKeysFields entries into the same backing-array slots,
 		// corrupting each other's view of the field list and leaving fieldMap
 		// without an entry for a template token — causing the nil type-
 		// assertion panic at line 116 (fbxj-vtfy-yrbl-mlyw).
-		fields = append(fields[:len(fields):len(fields)], objectKeysField...)
-		opts.template = template
+		flds = append(flds[:len(flds):len(flds)], objectKeysFields...)
 	}
 
-	// Parse the template and extract relevant information
-	orderedFields, templateFieldsMap, trailingTemplate := parseCustomTemplate(opts.template)
+	orderedFields, templateFieldsMap, trailingTemplate := parseCustomTemplate(templateBytes)
 
-	// Preprocess the fields, generating appropriate emit functions
 	fieldMap := make(map[string]any)
 	fieldTypes := make(map[string]string)
-	for _, field := range fields {
+	fieldNames := make([]string, 0, len(flds))
+	for _, field := range flds {
 		if err := bindField(cfg, field, fieldMap, false); err != nil {
 			return nil, err
 		}
-
 		fieldTypes[field.Name] = field.Type
-		state.prevCacheForDup[field.Name] = make(map[any]struct{})
-		state.prevCacheCardinality[field.Name] = make([]any, 0)
+		fieldNames = append(fieldNames, field.Name)
 	}
 
-	// Roll into slice of emit functions
 	emitters := make([]emitter, 0, len(fieldMap))
 	for _, fieldName := range orderedFields {
 		emitters = append(emitters, emitter{
@@ -128,9 +146,24 @@ func newGeneratorWithCustomTemplate(cfg Config, fields Fields, totEvents uint64,
 		})
 	}
 
-	state.totEvents = totEvents
+	tpl := &customTemplate{
+		emitters:         emitters,
+		trailingTemplate: trailingTemplate,
+		totEvents:        totEvents,
+		fieldNames:       fieldNames,
+	}
 
-	return &GeneratorWithCustomTemplate{emitters: emitters, trailingTemplate: trailingTemplate, totEvents: totEvents, state: state}, nil
+	return func(o *options) {
+		o.make = func(_ Config, _ Fields, _ uint64, opts options) (Generator, error) {
+			state := newGenState(opts.randSeed, opts.startTime, opts.timeSpeed)
+			for _, fieldName := range tpl.fieldNames {
+				state.prevCacheForDup[fieldName] = make(map[any]struct{})
+				state.prevCacheCardinality[fieldName] = make([]any, 0)
+			}
+			state.totEvents = tpl.totEvents
+			return &GeneratorWithCustomTemplate{tpl: tpl, state: state}, nil
+		}
+	}, nil
 }
 
 func (gen *GeneratorWithCustomTemplate) Close() error {
@@ -148,15 +181,15 @@ func (gen *GeneratorWithCustomTemplate) Emit(buf *bytes.Buffer) error {
 }
 
 func (gen *GeneratorWithCustomTemplate) emit(buf *bytes.Buffer) error {
-	if gen.totEvents == 0 || gen.state.counter < gen.totEvents {
-		for _, e := range gen.emitters {
+	if gen.tpl.totEvents == 0 || gen.state.counter < gen.tpl.totEvents {
+		for _, e := range gen.tpl.emitters {
 			buf.Write(e.prefix)
 			if err := e.emitFunc(gen.state, buf); err != nil {
 				return err
 			}
 		}
 
-		buf.Write(gen.trailingTemplate)
+		buf.Write(gen.tpl.trailingTemplate)
 	} else {
 		return io.EOF
 	}
