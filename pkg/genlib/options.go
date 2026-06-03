@@ -11,7 +11,6 @@ type options struct {
 	randSeed  int64
 	startTime time.Time
 	timeSpeed float64
-	template  []byte
 	make      func(Config, Fields, uint64, options) (Generator, error)
 }
 
@@ -52,27 +51,53 @@ func WithRandSeed(seed int64) Option {
 }
 
 // WithTextTemplate sets a Go text template for the generator.
-func WithTextTemplate(template []byte) Option {
+// The template is compiled on each NewGenerator call. To compile once and share
+// across multiple generators, use NewTextTemplate instead.
+func WithTextTemplate(templateBytes []byte) Option {
 	return func(o *options) {
-		o.template = template
-		o.make = newGeneratorWithTextTemplate
+		o.make = func(cfg Config, flds Fields, totEvents uint64, opts options) (Generator, error) {
+			compiled, err := NewTextTemplate(cfg, flds, totEvents, templateBytes)
+			if err != nil {
+				return nil, err
+			}
+			var o2 options
+			compiled(&o2)
+			return o2.make(cfg, flds, totEvents, opts)
+		}
 	}
 }
 
 // WithCustomTemplate sets a custom placeholder template for the generator.
-func WithCustomTemplate(template []byte) Option {
+// The template is compiled on each NewGenerator call. To compile once and share
+// across multiple generators, use NewCustomTemplate instead.
+func WithCustomTemplate(templateBytes []byte) Option {
 	return func(o *options) {
-		o.template = template
-		o.make = newGeneratorWithCustomTemplate
+		o.make = func(cfg Config, flds Fields, totEvents uint64, opts options) (Generator, error) {
+			compiled, err := NewCustomTemplate(cfg, flds, totEvents, templateBytes)
+			if err != nil {
+				return nil, err
+			}
+			var o2 options
+			compiled(&o2)
+			return o2.make(cfg, flds, totEvents, opts)
+		}
 	}
 }
 
 // applyOptions applies the given options and returns the final configuration.
 func applyOptions(opts []Option) options {
-	// This initialization is executed in a concurrent context, any accesss
+	// This initialization is executed in a concurrent context, any access
 	// to non thread-safe resources must be properly synchronized.
 	o := options{
-		make:      newGeneratorWithCustomTemplate,
+		make: func(cfg Config, flds Fields, totEvents uint64, opts options) (Generator, error) {
+			compiled, err := NewCustomTemplate(cfg, flds, totEvents, nil, WithRandSeed(opts.randSeed))
+			if err != nil {
+				return nil, err
+			}
+			var o2 options
+			compiled(&o2)
+			return o2.make(cfg, flds, totEvents, opts)
+		},
 		randSeed:  time.Now().UnixNano(),
 		startTime: time.Now(),
 	}
